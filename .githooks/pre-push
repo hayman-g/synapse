@@ -1,0 +1,37 @@
+#!/bin/sh
+# Loom pre-push judge: gates (blocking) → grade via Claude, with a live status Loom reads.
+set -e
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+LOOM="/Users/onec/Documents/me/code/react-course/cockpit"
+STATUS="$LOOM/src/data/judging.json"
+
+# day N = days since 2026-09-01 + 1, clamped 1..35
+N=$(node -e "const d=Math.floor((Date.now()-Date.parse('2026-09-01T00:00:00Z'))/864e5)+1;process.stdout.write(String(Math.min(Math.max(d,1),35)))")
+
+# set_status <active 0|1> <stamp|nostamp>
+set_status() {
+  node -e "const fs=require('fs'),f='$STATUS';let s={active:false,day:null,lastJudgedAt:null};try{s=JSON.parse(fs.readFileSync(f))}catch{};s.active=('$1'==='1');s.day=$N;if('$2'==='stamp')s.lastJudgedAt=new Date().toISOString();fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')"
+}
+# always clear the spinner on exit (keeps any stamped time)
+trap 'set_status 0 nostamp' EXIT INT TERM
+
+echo "▶ gate: tsc --noEmit"; npx tsc --noEmit
+echo "▶ gate: eslint"; npm run -s lint
+echo "✓ gates pass"
+
+if command -v claude >/dev/null 2>&1; then
+  echo "▶ judge: grading day $N via Claude…"
+  set_status 1 nostamp     # spinner on — Loom shows "judging day N…"
+  if claude -p "$(cat "$ROOT/.githooks/judge-prompt.md")" \
+       --permission-mode acceptEdits \
+       --add-dir "$LOOM" >"$ROOT/.githooks/last-judge.log" 2>&1; then
+    echo "✓ judged day $N — see Loom"
+  else
+    echo "  judge error — see .githooks/last-judge.log (push continues)"
+  fi
+  set_status 0 stamp       # spinner off + stamp last-judged time
+else
+  echo "▶ judge: 'claude' not found — skipped"
+fi
+exit 0
